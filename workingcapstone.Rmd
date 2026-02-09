@@ -1,0 +1,23 @@
+---
+title: "Is College A Scam? : The Effects of College Education on the lives of Latinos"
+author: "Sofia Garcia"
+date: "2026-02-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+library(tidyverse)
+library(tidycensus)
+census_api_key("1d4b88243f284bec796dcd6d10489d5698ccae33", install=TRUE, overwrite=TRUE)
+
+readRenviron("~/.Renviron")
+
+```{r setup, include=FALSE}
+library(tidycensus)
+library(tidyverse)
+options(scipen = 999)
+```
+
