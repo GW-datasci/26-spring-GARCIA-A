@@ -3,21 +3,53 @@ title: "Is College A Scam? : The Effects of College Education on the lives of La
 author: "Sofia Garcia"
 date: "2026-02-05"
 output: html_document
+cache_table: TRUE
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-```
-
 library(tidyverse)
 library(tidycensus)
 census_api_key("1d4b88243f284bec796dcd6d10489d5698ccae33", install=TRUE, overwrite=TRUE)
 
 readRenviron("~/.Renviron")
+```
+
 
 ```{r setup, include=FALSE}
-library(tidycensus)
-library(tidyverse)
-options(scipen = 999)
+hispanicpop <-get_acs(geography= 'state', table= 'B03003', year=2023, survey='acs5')
+orderhispanicpop <- hispanicpop %>% filter(variable == 'B03003_003') %>% select(NAME, estimate) %>% arrange(desc(estimate))
+
+orderhispanicpop
+
+#code ran to determine which states had largest hispanic population to narrow down as whole country was too broad
+#selected states: California, Texas, New York (1 from each coast)
+#Note: having year=2023 with survey=acs5 means data is being pulled from 2018-2023
 ```
+
+```{r setup, include=FALSE}
+#keeps selected states 
+states <- c('California', 'Texas', 'New York')
+
+#pulls education attainment then sorts by states I selected above 
+hedu <- get_acs(geography = 'state', table = 'B15003I', year = 2023, survey = 'acs5')
+
+stateedu <- hedu %>% filter(NAME %in% states) %>% mutate(category = case_when(variable %in% c('B15003I_022', 'B15003I_023', 'B15003I_024', 'B15003I_025') ~ 'College', variable != 'B15003I_001' ~ 'NCollege', TRUE ~ 'Total')) %>% 
+  filter(category != 'Total') %>% group_by(NAME, category) %>% summarize(population = sum(estimate), .groups = 'drop') %>% tidyr::pivot_wider(names_from = category, values_from = population) %>% mutate(total = College + NCollege, percollege = College / total, perncollege = NCollege / total)
+
+#pulls a median income 
+hispincome <- get_acs(geography = 'state', table = 'B19013I', year = 2023, survey = 'acs5') %>% filter(NAME %in% states) %>% select(NAME, median_income = estimate)
+
+#going to use get_pums to be able to better compare;right now the analysis is ecological
+pumsdat <- get_pums(variables = c('AGEP', 'HISP', 'EDUC', 'PINCP'), state = c('CA','TX','NY'), year = 2023, survey = 'acs5')
+  
+
+#joining education and income to compare
+edu_inc <- hedu %>% left_join(hispincome, by = NAME) %>% arrange(desc(percollege))
+edu_inc
+
+#Note: All data is pulled from; all codes (B15003I) are how things are coded in tidycensus; left join was used because edu is the main dataset, also accounts for any missing data in income 
+#STILL NEED: make sure median outcome is also filtered by college and no college; can't do this, figuring out another way 
+```
+
 
