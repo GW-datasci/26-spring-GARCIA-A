@@ -8,8 +8,11 @@ cache_table: TRUE
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
+install.packages("matrixStats", type = "binary")
+library(matrixStats)
+library(dplyr)
 library(tidycensus)
+library(tidyverse)
 census_api_key("1d4b88243f284bec796dcd6d10489d5698ccae33", install=TRUE, overwrite=TRUE)
 
 readRenviron("~/.Renviron")
@@ -22,34 +25,59 @@ orderhispanicpop <- hispanicpop %>% filter(variable == 'B03003_003') %>% select(
 
 orderhispanicpop
 
-#code ran to determine which states had largest hispanic population to narrow down as whole country was too broad
-#selected states: California, Texas, New York (1 from each coast)
+#code ran to determine which states had largest hispanic population; this is all set up`
 #Note: having year=2023 with survey=acs5 means data is being pulled from 2018-2023
 ```
 
+
 ```{r setup, include=FALSE}
-#keeps selected states 
-states <- c('California', 'Texas', 'New York')
+#starts working on pulling data here 
+states <- c('CA', 'TX', 'NY')
 
-#pulls education attainment then sorts by states I selected above 
-hedu <- get_acs(geography = 'state', table = 'B15003I', year = 2023, survey = 'acs5')
+#using pums data to do comparisons I want
+pumsdat <- get_pums(variables = c('AGEP', 'HISP', 'SCHL', 'PINCP', 'ST', 'PWGTP', 'HINS1', 'HINS2', 'HINS3', 'SSIP'), state = states, survey = 'acs5', year = 2023)
 
-stateedu <- hedu %>% filter(NAME %in% states) %>% mutate(category = case_when(variable %in% c('B15003I_022', 'B15003I_023', 'B15003I_024', 'B15003I_025') ~ 'College', variable != 'B15003I_001' ~ 'NCollege', TRUE ~ 'Total')) %>% 
-  filter(category != 'Total') %>% group_by(NAME, category) %>% summarize(population = sum(estimate), .groups = 'drop') %>% tidyr::pivot_wider(names_from = category, values_from = population) %>% mutate(total = College + NCollege, percollege = College / total, perncollege = NCollege / total)
+#filtering Latino adults and education
+latinos <- pumsdat %>% filter(HISP != 1, AGEP >= 25)
+latedu <- latinos %>% mutate(college = ifelse(SCHL >= 21, 1, 0))
+latedu <- latedu %>% mutate(PINCP= as.numeric(PINCP))
 
-#pulls a median income 
-hispincome <- get_acs(geography = 'state', table = 'B19013I', year = 2023, survey = 'acs5') %>% filter(NAME %in% states) %>% select(NAME, median_income = estimate)
 
-#going to use get_pums to be able to better compare;right now the analysis is ecological
-pumsdat <- get_pums(variables = c('AGEP', 'HISP', 'EDUC', 'PINCP'), state = c('CA','TX','NY'), year = 2023, survey = 'acs5')
-  
+#pulls education attainment by state(% of college v. non college latinos)
 
-#joining education and income to compare
-edu_inc <- hedu %>% left_join(hispincome, by = NAME) %>% arrange(desc(percollege))
-edu_inc
+stedu <- latedu %>% group_by(STATE, college) %>% summarise(pop = sum(PWGTP, na.rm = TRUE), .groups = "drop") %>% group_by(STATE) %>% mutate(percent = pop / sum(pop))
 
-#Note: All data is pulled from; all codes (B15003I) are how things are coded in tidycensus; left join was used because edu is the main dataset, also accounts for any missing data in income 
-#STILL NEED: make sure median outcome is also filtered by college and no college; can't do this, figuring out another way 
+#pulls a median income by state and education
+stin <- latedu %>% group_by(STATE, college) %>% summarise(median_income = weightedMedian(PINCP, w = PWGTP, na.rm = TRUE), .groups = "drop")
+
+
+#using PUMS data I can do the comparisons I want so I rewrote what I did with this data instead of tidycensus 
+#using weighted data as it's more accurate of the whole population; PUMS pulls a sample of the data which could bias my results 
+#ST codes: 08-CA, 48-TX, 36-NY
+#PINCP: personal income; SCHL >= 21 is bachelors or higher
 ```
 
+```{r}
+#doing more variables here for organization
+
+#health insurance 
+priv = ifelse(HINS1 == 1, 1, 0)
+pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0)
+none = ifelse(HINS != 1 & (HINS2 != 1 & HINS3 != 1), 1, 0)
+
+healthin <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWGTP, na.rm = TRUE), 
+                                                              priv = sum(PWGTP, na.rm = TRUE)/ totalpop,
+                                                              pub = sum(PWGTP, na.rm = TRUE)/ totalpop, 
+                                                              none = sum(PWGTP, na.rm = TRUE)/ totalpop, .groups = 'drop')
+
+#SNAP/gov assistance
+receiving = ifelse(SSIP == 1, 1, 0) 
+
+snap <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWGTP, na.rm = TRUE), receiving = sum(PWGTP, na.rm = TRUE)/ totalpop, .groups = 'drop')
+```
+
+
+```{r setup, include = FALSE}
+#going to do regressions here after
+```
 
