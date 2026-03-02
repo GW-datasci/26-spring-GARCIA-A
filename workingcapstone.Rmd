@@ -20,7 +20,7 @@ readRenviron("~/.Renviron")
 
 
 ```{r setup, include=FALSE}
-hispanicpop <-get_acs(geography= 'state', table= 'B03003', year=2023, survey='acs5')
+hispanicpop <-get_acs(geography= 'state', table= 'B03003', year=2023, survey='acs5', cache = TRUE)
 orderhispanicpop <- hispanicpop %>% filter(variable == 'B03003_003') %>% select(NAME, estimate) %>% arrange(desc(estimate))
 
 orderhispanicpop
@@ -36,15 +36,15 @@ states <- c('CA', 'TX', 'NY')
 
 #using pums data to do comparisons I want
 pumsdat <- get_pums(variables = c('AGEP', 'HISP', 'SCHL', 'PINCP', 'ST', 'PWGTP', 'HINS1', 'HINS2', 'HINS3', 'SSIP'), state = states, survey = 'acs5', year = 2023)
-
+pumsdat <- pumsdat %>% mutate(priv = ifelse(HINS1 == 1, 1, 0), pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0), none = ifelse(HINS1 != 1 & HINS2 != 1 & HINS3 != 1, 1, 0))
 #filtering Latino adults and education
-latinos <- pumsdat %>% filter(HISP != 1, AGEP >= 25)
+latinos <- pumsdat %>% filter(HISP != 0, AGEP >= 25)
 latedu <- latinos %>% mutate(college = ifelse(SCHL >= 21, 1, 0))
 latedu <- latedu %>% mutate(PINCP= as.numeric(PINCP))
-
+latedu <- latedu %>% mutate(priv = ifelse(HINS1 == 1, 1, 0), pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0), none = ifelse(HINS1 != 1 & HINS2 != 1 & HINS3 != 1, 1, 0), receiving = ifelse(SSIP == 1, 1, 0))
+#adding indicators to make regressions easier to run later 
 
 #pulls education attainment by state(% of college v. non college latinos)
-
 stedu <- latedu %>% group_by(STATE, college) %>% summarise(pop = sum(PWGTP, na.rm = TRUE), .groups = "drop") %>% group_by(STATE) %>% mutate(percent = pop / sum(pop))
 
 #pulls a median income by state and education
@@ -61,9 +61,9 @@ stin <- latedu %>% group_by(STATE, college) %>% summarise(median_income = weight
 #doing more variables here for organization
 
 #health insurance 
-priv = ifelse(HINS1 == 1, 1, 0)
-pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0)
-none = ifelse(HINS != 1 & (HINS2 != 1 & HINS3 != 1), 1, 0)
+#priv = ifelse(HINS1 == 1, 1, 0)
+#pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0)
+#none = ifelse(HINS != 1 & (HINS2 != 1 & HINS3 != 1), 1, 0)
 
 healthin <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWGTP, na.rm = TRUE), 
                                                               priv = sum(PWGTP, na.rm = TRUE)/ totalpop,
@@ -71,13 +71,44 @@ healthin <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWG
                                                               none = sum(PWGTP, na.rm = TRUE)/ totalpop, .groups = 'drop')
 
 #SNAP/gov assistance
-receiving = ifelse(SSIP == 1, 1, 0) 
 
-snap <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWGTP, na.rm = TRUE), receiving = sum(PWGTP, na.rm = TRUE)/ totalpop, .groups = 'drop')
+snap <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWGTP, na.rm = TRUE), receiving = sum(receiving * PWGTP, na.rm = TRUE)/ totalpop, .groups = 'drop')
+
+
+snapcount <- latedu %>%
+  group_by(STATE, college) %>%
+  summarise(
+    totalpop       = sum(PWGTP, na.rm = TRUE),              
+    receiving_ct   = sum(receiving * PWGTP, na.rm = TRUE), 
+    recprop        = receiving_ct / totalpop,              
+    .groups        = "drop"
+  )
+
 ```
 
 
 ```{r setup, include = FALSE}
-#going to do regressions here after
+#regressions 
+
+#median income regression(linear)
+inreg <- lm(PINCP ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP)
+#summary(inreg)
+
+#health insurance regression(logistic)
+privreg <- glm(priv ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
+#summary(privreg)
+pubreg <- glm(pub ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
+#summary(pubreg)
+nonereg <- glm(none ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = bimonial())
+#summary(nonreg)
+
+#SNAP/gov assistance 
+snapreg <- glm(receiving ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
+#summary(snapreg)
+#used receiving instead of snap because snap is grouped and for regressions we run them on individual observations (receiving is an individual level variable)
+```
+
+```{r}
+#for week 4 update, trouble shooted some typo errors in my code, i finished coding the regressions for my variables, currently trouble shooting the snap variable or trying to see if there are even any recipients 
 ```
 
