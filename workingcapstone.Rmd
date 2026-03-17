@@ -27,6 +27,7 @@ orderhispanicpop
 
 #code ran to determine which states had largest hispanic population; this is all set up`
 #Note: having year=2023 with survey=acs5 means data is being pulled from 2018-2023
+#do i still need this ? 
 ```
 
 
@@ -35,16 +36,45 @@ orderhispanicpop
 states <- c('CA', 'TX', 'NY')
 
 #using pums data to do comparisons I want
-pumsdat <- get_pums(variables = c('AGEP', 'HISP', 'SCHL', 'PINCP', 'ST', 'PWGTP', 'HINS1', 'HINS2', 'HINS3', 'SSIP'), state = states, survey = 'acs5', year = 2023)
+pumsdat <- get_pums(variables = c('AGEP', 'HISP', 'SCHL', 'PINCP', 'ST', 'PWGTP', 'HINS1', 'HINS2', 'HINS3', 'FS', 'OCCP'), state = states, survey = 'acs5', year = 2023)
 pumsdat <- pumsdat %>% mutate(priv = ifelse(HINS1 == 1, 1, 0), pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0), none = ifelse(HINS1 != 1 & HINS2 != 1 & HINS3 != 1, 1, 0))
+pumsdat <- pumsdat %>% mutate(cache_table = TRUE)
+
 #filtering Latino adults and education
-latinos <- pumsdat %>% filter(HISP != 0, AGEP >= 25)
-latedu <- latinos %>% mutate(college = ifelse(SCHL >= 21, 1, 0))
-latedu <- latedu %>% mutate(PINCP= as.numeric(PINCP))
-latedu <- latedu %>% mutate(priv = ifelse(HINS1 == 1, 1, 0), pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0), none = ifelse(HINS1 != 1 & HINS2 != 1 & HINS3 != 1, 1, 0), receiving = ifelse(SSIP == 1, 1, 0))
+latinos <- pumsdat %>% filter(HISP != 1, AGEP >= 25)
+latedu <- latinos %>%
+  mutate(
+    college = ifelse(SCHL >= 21, 1, 0),
+    PINCP = as.numeric(PINCP),
+    PWGTP = as.numeric(PWGTP),
+
+    priv = ifelse(HINS1 == 1, 1, 0),
+    pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0),
+    none = ifelse(HINS1 != 1 & HINS2 != 1 & HINS3 != 1, 1, 0),
+
+    receiving = ifelse(FS == 1, 1, 0),
+
+    occ_cat = case_when(
+      OCCP >= 10 & OCCP < 1000 ~ "Management",
+      OCCP >= 1000 & OCCP < 2000 ~ "Business/Finance",
+      OCCP >= 2000 & OCCP < 3000 ~ "STEM",
+      OCCP >= 3000 & OCCP < 4000 ~ "Education/Legal",
+      OCCP >= 4000 & OCCP < 5000 ~ "Healthcare",
+      OCCP >= 5000 & OCCP < 7000 ~ "Service",
+      OCCP >= 7000 & OCCP < 9000 ~ "Construction/Production",
+      TRUE ~ "Other"
+    )
+  )
+occ_compare <- latedu %>% group_by(college, occ_cat) %>% summarise(pop = sum(PWGTP, na.rm = TRUE), .groups = "drop") %>% group_by(college) %>% mutate(percent = pop / sum(pop))
+
+latedu$college <- ifelse(latedu$SCHL >= 21, 1, 0)
 #adding indicators to make regressions easier to run later 
 
 #pulls education attainment by state(% of college v. non college latinos)
+latedu <- latedu %>%
+  mutate(
+    PINCP = as.numeric(PINCP),
+    PWGTP = as.numeric(PWGTP))
 stedu <- latedu %>% group_by(STATE, college) %>% summarise(pop = sum(PWGTP, na.rm = TRUE), .groups = "drop") %>% group_by(STATE) %>% mutate(percent = pop / sum(pop))
 
 #pulls a median income by state and education
@@ -61,19 +91,24 @@ stin <- latedu %>% group_by(STATE, college) %>% summarise(median_income = weight
 #doing more variables here for organization
 
 #health insurance 
-#priv = ifelse(HINS1 == 1, 1, 0)
-#pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0)
-#none = ifelse(HINS != 1 & (HINS2 != 1 & HINS3 != 1), 1, 0)
 
-healthin <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWGTP, na.rm = TRUE), 
-                                                              priv = sum(PWGTP, na.rm = TRUE)/ totalpop,
-                                                              pub = sum(PWGTP, na.rm = TRUE)/ totalpop, 
-                                                              none = sum(PWGTP, na.rm = TRUE)/ totalpop, .groups = 'drop')
+healthin <- latedu %>%
+  group_by(STATE, college) %>%
+  summarise(
+    priv = weighted.mean(priv, PWGTP, na.rm = TRUE),
+    pub = weighted.mean(pub, PWGTP, na.rm = TRUE),
+    none = weighted.mean(none, PWGTP, na.rm = TRUE),
+    .groups = "drop")
 
 #SNAP/gov assistance
 
-snap <- latedu %>% group_by(STATE, college) %>% summarise(totalpop = sum(PWGTP, na.rm = TRUE), receiving = sum(receiving * PWGTP, na.rm = TRUE)/ totalpop, .groups = 'drop')
-
+snap <- latedu %>%
+  group_by(STATE, college) %>%
+  summarise(
+    totalpop = sum(PWGTP, na.rm = TRUE),
+    receiving = sum(receiving * PWGTP, na.rm = TRUE) / totalpop,
+    .groups = "drop"
+  )
 
 snapcount <- latedu %>%
   group_by(STATE, college) %>%
@@ -92,23 +127,148 @@ snapcount <- latedu %>%
 
 #median income regression(linear)
 inreg <- lm(PINCP ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP)
-#summary(inreg)
+summary(inreg)
 
 #health insurance regression(logistic)
 privreg <- glm(priv ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
-#summary(privreg)
+summary(pubinreg)
+
 pubreg <- glm(pub ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
-#summary(pubreg)
-nonereg <- glm(none ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = bimonial())
-#summary(nonreg)
+summary(pubreg)
+
+nonereg <- glm(none ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
+summary(nonreg)
 
 #SNAP/gov assistance 
 snapreg <- glm(receiving ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
-#summary(snapreg)
+summary(snapreg)
 #used receiving instead of snap because snap is grouped and for regressions we run them on individual observations (receiving is an individual level variable)
+
+#occupation
+occreg <- lm(PINCP ~ college + occ_cat + AGEP + factor(STATE), data = latedu, weights = PWGTP)
+#summary(occreg)
 ```
 
 ```{r}
-#for week 4 update, trouble shooted some typo errors in my code, i finished coding the regressions for my variables, currently trouble shooting the snap variable or trying to see if there are even any recipients 
+#things to do: fix the receiving part in my snap benefits, maybe to add extra stuff compare median income of latinos with and without college education to general population in their states
+#see if i can find job type and how i could include it 
+#come up with hypothesis
+#go back to code book and look at how snap was coded
+#moving onto VIZ; coming back to snap variable later
+```
+
+```{r}
+#visualizations
+library(ggplot2)
+#median income graph
+ggplot(stin, aes(x = STATE, y = median_income, fill = factor(college))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Median Income of Latino Adults by Education and State",
+    x = "State",
+    y = "Median Income",
+    fill = "Education Level"
+  ) +
+  scale_fill_manual(
+    labels = c("No College Degree", "College Degree"),
+    values = c("#F8766D", "#00BFC4")
+  ) +
+  theme_minimal()
+
+#healthcare graph 
+ggplot(healthin, aes(x = STATE, y = priv, fill = factor(college))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Private Health Insurance Coverage Among Latino Adults",
+    x = "State",
+    y = "Percent with Private Insurance",
+    fill = "Education Level"
+  ) +
+  scale_fill_manual(
+    labels = c("No College Degree", "College Degree"),
+    values = c("#F8766D", "#00BFC4")
+  ) +
+  theme_minimal()
+
+#snap graph 
+ggplot(snap, aes(x = STATE, y = receiving, fill = factor(college))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "SNAP Participation Among Latino Adults", x= "State", y = "Percent Receiving SNAP", fill = "Education Level") + theme_minimal()
+
+#occupation graph
+ggplot(occ_compare, aes(x = occ_cat, y = percent, fill = factor(college))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Occupations of Latino Adults by Education Level",
+    x = "Occupation Category",
+    y = "Percent of Population",
+    fill = "Education"
+  ) +
+  scale_fill_manual(
+    labels = c("No College Degree", "College Degree"),
+    values = c("#F8766D", "#00BFC4")
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#interpretations of linear regressions 
+#inreg
+# latino college grads earn an estimated 47,480.49 more than latino non college grads, age and state are held constant
+# p value indicated findings were statistically significant: college education for latinos without a doubt has an impact on income outcomes that 
+#other things to consider: age28 indicates that latino college grads at age 28 earn 7595.61 more than other 28 yr old latinos who didn't attend college, this is important when considering this is an age people tend to start families and family is an important factor within latino culture
+#multiple r squared: 0.1812 indicates moderate explanatory power
+
+#privreg
+# p value < 0.5 meaning that results are statistically signficant
+# latino college grads have ~ 2.5 times higher odds of having private health insurance compared to latino non college grads when controlling for state and age
+# as latinos get older their likelihood of having private health insurance increases(increase starts at age 30 and keeps increasing)
+# education increases access to private heathcare among Latino adults(but sure this is applicable to other ethnicities and races)
+
+#pubreg
+# p value indicates statistically significant results
+# as age increases the likelihood of latinos with a college education having public healthcare decreases but increases around age 65 which is the age people typically get on medicare
+
+#snapreg
+# p value indicated statistically significant results 
+# college educated latinos are less likely to be recieving snap benefits compared to latinos who don't have a college education
+#occreg
+# p values indicate statistically significant results 
+# moderate explanatory power indicated by multiple r squared : 0.1955
+```
+
+```{r}
+#extra graph combining gov assistance, median income and priv health insurance
+
+loutcomes <- latedu %>%
+  group_by(college) %>%
+  summarise(
+    median_income = weightedMedian(PINCP, w = PWGTP, na.rm = TRUE),
+    private_insurance = weighted.mean(priv, PWGTP, na.rm = TRUE),
+    gov_assistance = weighted.mean(receiving, PWGTP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+library(tidyr)
+
+loutcomes_long <- loutcomes %>%
+  pivot_longer(
+    cols = c(median_income, private_insurance, gov_assistance),
+    names_to = "outcome",
+    values_to = "value"
+  )
+
+ggplot(loutcomes_long, aes(x = outcome, y = value, fill = factor(college))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Livelihood Outcomes of Latino Adults by Education",
+    x = "Outcome",
+    y = "Value",
+    fill = "Education"
+  ) +
+  scale_fill_manual(
+    labels = c("No College Degree", "College Degree"),
+    values = c("#F8766D", "#00BFC4")
+  ) +
+  theme_minimal()
 ```
 
