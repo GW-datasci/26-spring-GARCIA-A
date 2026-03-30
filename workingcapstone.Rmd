@@ -20,18 +20,6 @@ readRenviron("~/.Renviron")
 
 
 ```{r setup, include=FALSE}
-hispanicpop <-get_acs(geography= 'state', table= 'B03003', year=2023, survey='acs5', cache = TRUE)
-orderhispanicpop <- hispanicpop %>% filter(variable == 'B03003_003') %>% select(NAME, estimate) %>% arrange(desc(estimate))
-
-orderhispanicpop
-
-#code ran to determine which states had largest hispanic population; this is all set up`
-#Note: having year=2023 with survey=acs5 means data is being pulled from 2018-2023
-#do i still need this ? 
-```
-
-
-```{r setup, include=FALSE}
 #starts working on pulling data here 
 states <- c('CA', 'TX', 'NY')
 
@@ -127,34 +115,48 @@ snapcount <- latedu %>%
 
 #median income regression(linear)
 inreg <- lm(PINCP ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP)
-summary(inreg)
+#summary(inreg)
+#summary(inreg)$adj.r.squared
 
 #health insurance regression(logistic)
 privreg <- glm(priv ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
-summary(pubinreg)
+#summary(privreg)
+#exp(coef(privreg))
 
 pubreg <- glm(pub ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
-summary(pubreg)
-
-nonereg <- glm(none ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
-summary(nonreg)
+#summary(pubreg)
 
 #SNAP/gov assistance 
 snapreg <- glm(receiving ~ college + AGEP + factor(STATE), data = latedu, weights = PWGTP, family = binomial())
-summary(snapreg)
+#summary(snapreg)
 #used receiving instead of snap because snap is grouped and for regressions we run them on individual observations (receiving is an individual level variable)
 
 #occupation
 occreg <- lm(PINCP ~ college + occ_cat + AGEP + factor(STATE), data = latedu, weights = PWGTP)
 #summary(occreg)
-```
 
-```{r}
-#things to do: fix the receiving part in my snap benefits, maybe to add extra stuff compare median income of latinos with and without college education to general population in their states
-#see if i can find job type and how i could include it 
-#come up with hypothesis
-#go back to code book and look at how snap was coded
-#moving onto VIZ; coming back to snap variable later
+#cross validation
+library(caret)
+set.seed(123)
+
+train_control <- trainControl(method = "cv", number = 5)
+cv_model <- train(PINCP ~ college + AGEP + factor(STATE), data = latedu, method = "lm", trControl = train_control, weights = PWGTP)
+cv_model
+
+library(car)
+vif(inreg)
+#vif <5 is good, vif 5-10 moderate concern, vif > 10 is problem: should tell me how much colinearity is bugging my model if at all(shouldn't be higher than 8)
+
+#residual check: helps say my model assumptions are valid
+latedu$log_income <- log(latedu$PINCP + 1)
+
+lm(log_income ~ college + AGEP + factor(STATE), data = latedu)
+plot(inreg, which = 1) 
+
+# to dos in this section
+# add specific columns in iterations; start with simple model that i can explain to everyone; to improve r^2
+# cleft test for standard deviation; may be significant but not reproducible 
+# come up with hypothesis
 ```
 
 ```{r}
@@ -172,7 +174,8 @@ ggplot(stin, aes(x = STATE, y = median_income, fill = factor(college))) +
   scale_fill_manual(
     labels = c("No College Degree", "College Degree"),
     values = c("#F8766D", "#00BFC4")
-  ) +
+  ) + 
+  scale_x_discrete(labels = c("06" = "CA", "36" = "NY", "48" = "TX")) +
   theme_minimal()
 
 #healthcare graph 
@@ -187,12 +190,14 @@ ggplot(healthin, aes(x = STATE, y = priv, fill = factor(college))) +
   scale_fill_manual(
     labels = c("No College Degree", "College Degree"),
     values = c("#F8766D", "#00BFC4")
-  ) +
+  ) + 
+  scale_y_continuous(labels = scales::percent)
   theme_minimal()
 
 #snap graph 
-ggplot(snap, aes(x = STATE, y = receiving, fill = factor(college))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "SNAP Participation Among Latino Adults", x= "State", y = "Percent Receiving SNAP", fill = "Education Level") + theme_minimal()
-
+ggplot(snap, aes(x = STATE, y = receiving, fill = factor(college))) + geom_bar(stat = "identity", position = "dodge") + labs(title = "SNAP Participation Among Latino Adults", x= "State", y = "Percent Receiving SNAP", fill = "Education Level") +
+  scale_y_continuous(labels = scales::percent)   + theme_minimal()
+\
 #occupation graph
 ggplot(occ_compare, aes(x = occ_cat, y = percent, fill = factor(college))) +
   geom_bar(stat = "identity", position = "dodge") +
@@ -205,9 +210,11 @@ ggplot(occ_compare, aes(x = occ_cat, y = percent, fill = factor(college))) +
   scale_fill_manual(
     labels = c("No College Degree", "College Degree"),
     values = c("#F8766D", "#00BFC4")
-  ) +
+  ) + scale_y_continuous(labels = scales::percent) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#results are interpreted like 20% of latinos with a college degree work in construction, and 50% of latinos without a college degree work in construction
+#more specifically "Among latino adults with a college degree, 20% work in construction, compared with 50% among those without a college degree
 ```
 
 ```{r}
@@ -234,6 +241,13 @@ ggplot(occ_compare, aes(x = occ_cat, y = percent, fill = factor(college))) +
 #occreg
 # p values indicate statistically significant results 
 # moderate explanatory power indicated by multiple r squared : 0.1955
+
+#plot results (income)
+#evidence of heteroskedasticity; as the variance of residuals increased with higher predicted income levels
+#suggests model performs less consistently for higher income people and the outlier indicates that some observations weren't well explained by the model however despite the limitations, no severe non linear patterns were observered meaning that the linear specification is broadly appropriate 
+
+#plot results (for income) post 
+#college coef ~ 1.29 meaning 2.5-3 times higher income so latinos who have a college degree earn dramatically more than those without one
 ```
 
 ```{r}
@@ -270,5 +284,9 @@ ggplot(loutcomes_long, aes(x = outcome, y = value, fill = factor(college))) +
     values = c("#F8766D", "#00BFC4")
   ) +
   theme_minimal()
+
+#to do this week: 
+# make sure snap and insurance columns show up 
+# make sure regressions are done well incase im asked about it
 ```
 
