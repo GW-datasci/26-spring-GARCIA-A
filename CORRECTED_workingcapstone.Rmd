@@ -1,0 +1,295 @@
+---
+title: "Is College A Scam? : The Effects of College Education on the lives of Latinos"
+author: "Sofia Garcia"
+date: "2026-02-05"
+output: html_document
+cache_table: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages("matrixStats", type = "binary")
+library(matrixStats)
+library(dplyr)
+library(tidycensus)
+library(tidyverse)
+census_api_key("1d4b88243f284bec796dcd6d10489d5698ccae33", install=TRUE, overwrite=TRUE)
+
+readRenviron("~/.Renviron")
+```
+
+
+```{r data_pull, include=FALSE}
+#starts working on pulling data here 
+states <- c('CA', 'TX', 'NY')
+
+#using pums data/filtering for Latinos
+pumsdat <- get_pums(variables = c('AGEP', 'HISP', 'SCHL', 'PINCP', 'ST', 'PWGTP', 'HINS1', 'HINS2', 'HINS3', 'FS', 'OCCP', 'SEX', 'WKW', 'WKHP'), state = states, survey = 'acs5', year = 2022)
+latinos <- pumsdat %>% filter(HISP != 1, AGEP >= 25)
+
+#filtering variables
+# PINCP > 0 restricts to workers with positive earnings; keeping zero-income
+# respondents (unemployed, retired, not in labor force) creates a spike at
+# log(0+1)=0, making residuals bimodal and collapsing R^2. Earnings regressions
+# on PUMS data standardly restrict to positive earners.
+latedu <- latinos %>%
+  mutate(
+    AGEP = as.numeric(AGEP),
+    PINCP = as.numeric(PINCP),
+    PWGTP = as.numeric(PWGTP),
+    WKHP = as.numeric(WKHP)
+  ) %>%
+  filter(PINCP > 0) %>%   
+  mutate(
+    college = ifelse(SCHL >= 21, 1, 0),
+    log_inc = log(PINCP),   # log() is fine now that PINCP > 0; no need for +1
+    age2 = AGEP^2,
+    female = ifelse(SEX == 2, 1, 0),
+    # full-time: usually works 35+ hrs/week (WKHP)
+    fulltime = ifelse(WKHP >= 35, 1, 0),
+
+    priv = ifelse(HINS1 == 1, 1, 0),
+    pub = ifelse(HINS2 == 1 | HINS3 == 1, 1, 0),
+    receiving = ifelse(FS == 1, 1, 0),
+
+    occ_cat = case_when(
+      OCCP >= 10 & OCCP < 1000 ~ "Management",
+      OCCP >= 1000 & OCCP < 2000 ~ "Business/Finance",
+      OCCP >= 2000 & OCCP < 3000 ~ "STEM",
+      OCCP >= 3000 & OCCP < 4000 ~ "Education/Legal",
+      OCCP >= 4000 & OCCP < 5000 ~ "Healthcare",
+      OCCP >= 5000 & OCCP < 7000 ~ "Service",
+      OCCP >= 7000 & OCCP < 9000 ~ "Construction/Production",
+      TRUE ~ "Other"
+    ),
+
+    STATE = factor(ST)
+  )
+latedu$occ_cat <- factor(latedu$occ_cat)
+latedu <- latedu %>% filter(!is.na(occ_cat)) %>% mutate(occ_cat = factor(occ_cat))
+
+occ_compare <- latedu %>% group_by(college, occ_cat) %>% summarise(pop = sum(PWGTP, na.rm = TRUE), .groups = "drop") %>% group_by(college) %>% mutate(percent = pop / sum(pop))
+
+stedu <- latedu %>% group_by(STATE, college) %>% summarise(pop = sum(PWGTP, na.rm = TRUE), .groups = "drop") %>% group_by(STATE) %>% mutate(percent = pop / sum(pop))
+
+library(matrixStats)
+
+stin <- latedu %>% group_by(STATE, college) %>% summarise(median_income = weightedMedian(PINCP, w = PWGTP, na.rm = TRUE), .groups = "drop")
+
+#ST codes: 08-CA, 48-TX, 36-NY
+```
+
+```{r}
+#summaries for tables/ figures (deciding still if needed)
+healthin <- latedu %>%
+  group_by(STATE, college) %>%
+  summarise(
+    priv = weighted.mean(priv, PWGTP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+snap <- latedu %>%
+  group_by(STATE, college) %>%
+  summarise(
+    receiving = weighted.mean(receiving, PWGTP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+```
+
+```{r regressions, include = FALSE}
+#regressions 
+
+incmdl <- lm(log_inc ~ college + AGEP + age2 + female + fulltime + STATE, data = latedu, weights = PWGTP)
+#summary(incmdl) : look at college coefficient
+
+incmdl_occ <- lm(log_inc ~ college + occ_cat + AGEP + age2 + female + fulltime + STATE,
+                       data = latedu,
+                       weights = PWGTP) 
+  #running this and seeing if the college coefficient changes, if it does then occupation explains it
+#summary(incmdl_occ)
+
+privmdl <- glm(priv ~ college + AGEP + female + STATE, data = latedu, weights = PWGTP, family = binomial())
+#summary(privmdl)
+#exp(coef(privmdl))
+
+snapmdl <- glm(receiving ~ college + AGEP + female + STATE, data = latedu, weights = PWGTP, family = binomial())
+#summary(snapmdl)
+#exp(coef(snapmdl))
+
+
+library(nnet)
+occmdl <- multinom(occ_cat ~ college + AGEP + age2 + STATE, data = latedu, weights = PWGTP)
+#summary(occmdl) 
+#weights 49(36 variable), initial value: 104387248.560575, iter 10 value: 89367317.882449, iter 20 value: 85152802.740061, iter 30 value: 85119113.752085, iter 40 value: 82747177.406749, final value: 82711872.201872 , converged
+
+
+#residual check: helps say my model assumptions are valid
+plot(incmdl, which = 1) 
+#summary(inreg)$adj.r.squared
+
+library(regclass)
+VIF(incmdl)
+```
+
+```{r}
+#visualizations
+library(ggplot2)
+#median income graph
+ggplot(latedu, aes(x = factor(college), y = log_inc, fill = factor(college))) +
+  geom_boxplot() + facet_wrap(~STATE) +
+  labs(
+    title = "Median Income of Latino Adults by Education and State",
+    x = "Education Level",
+    y = "Log Income",
+    fill = "Education Level"
+  ) +
+  scale_fill_manual(
+    labels = c("No College Degree", "College Degree"),
+    values = c("#F8766D", "#00BFC4")
+  ) + 
+  scale_x_discrete(labels = c("06" = "CA", "36" = "NY", "48" = "TX")) +
+  theme_minimal()
+
+#####FOR INC GRAPH
+#check to see what the graph is showing and make sure box plot is the best choice for this data 
+#add legend at the top for the respective state
+#figure out how to interpret the 5,10,15 so it's easier to read
+
+
+#healthcare graph + data
+health_byst <- latedu %>% group_by(STATE, college) %>% summarise(priv_rate = weighted.mean(priv, PWGTP, na.rm = TRUE), .groups = "drop")
+
+ggplot(health_byst, aes(x = factor(college), y = priv_rate, fill = factor(college))) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~STATE) + 
+  labs(
+    title = "Private Health Insurance Coverage Among Latino Adults",
+    x = "Education Level",
+    y = "Percent with Private Insurance"
+  ) +
+  scale_fill_manual(
+    labels = c("No College Degree", "College Degree"),
+    values = c("#F8766D", "#00BFC4")
+  ) + 
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+#### FOR PRIV HEALTH GRAPH 
+#fix legend because it says factor at the top (should say education lvl or something)
+#take off the 0 and 1 at the bottom and at the top fix it so that it has the respective states of each fips code
+
+#snap graph 
+snap_byst <- latedu %>% group_by(STATE, college) %>% summarise(snap_rate = weighted.mean(receiving, PWGTP, na.rm = TRUE), .groups = "drop")
+
+ggplot(snap_byst, aes(x = STATE, y = snap_rate, fill = factor(college))) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(title = "SNAP Participation Among Latino Adults", x= "State", y = "Percent Receiving SNAP", fill = "Education Level") + 
+  scale_fill_manual(labels = c("No College Degree", "College Degree"), 
+                    values = c("#F8766D", "#00BFC4")) +
+  scale_y_continuous(labels = scales::percent) +   
+    theme_minimal()
+#### FOR SNAP GRAPH 
+#add at the bottom the different state with their respective fips code 
+
+#occupation graph
+ggplot(occ_compare, aes(x = occ_cat, y = percent, fill = factor(college))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Occupations of Latino Adults by Education Level",
+    x = "Occupation Category",
+    y = "Percent of Population",
+    fill = "Education"
+  ) +
+  scale_fill_manual(
+    labels = c("No College Degree", "College Degree"),
+    values = c("#F8766D", "#00BFC4")
+  ) + scale_y_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#### OCC GRAPH 
+#figure out the error code (file, "wb"): cannot open compressed file 
+#results are interpreted like 20% of latinos with a college degree work in construction, and 50% of latinos without a college degree work in construction
+#more specifically "Among latino adults with a college degree, 20% work in construction, compared with 50% among those without a college degree
+```
+
+```{r}
+#WRITING FOR CAPSTONE 
+
+#using PUMS data I can do the comparisons I want so I rewrote what I did with this data instead of tidycensus 
+#using weighted data as it's more accurate of the whole population; PUMS pulls a sample of the data which could bias my results 
+#IV: college education (either have it or do not) + DV: income, private insurance, SNAP, occupation
+#Controls: age, sex, full-time work status, and state
+
+#SAMPLE RESTRICTION NOTE:
+#Analysis is restricted to Latino adults aged 25+ with positive personal income (PINCP > 0).
+#Zero-income respondents (unemployed, retired, not in labor force) are excluded because:
+#  1. log(0) is undefined — the +1 workaround creates an artificial spike at 0
+#  2. They represent a structurally different population (non-workers), not the
+#     labor market returns to education that this project studies
+#  3. Mixing workers and non-workers in a single earnings regression violates
+#     the linearity assumption and inflates residual variance, producing a bad
+#     residual plot and a near-zero R^2
+
+#used receiving instead of snap because snap is grouped and for regressions we run them on individual observations (receiving is an individual level variable) (this is for regression)
+
+##NEW MODEL WRITING
+
+#incmdl_occ
+#adjusted r^2 : 0.345 so my model explains ~35% of the variation in income; solid for social science data 
+#latinos with a college degree earn 2x more (2.02x) than those wihtout a college degree
+#women still earn about 24% less than men controlling for age, education, and job status
+#full time workers earn about 3x more than part time workers (makes sense)
+#while age increases with age, the rate increases then flattens over time 
+
+
+#snapmdl 
+#college = -1.119, but once converted to odds ration exp(-1.119) = 0.33
+#Latino adults with a college degree are approximately 67% less likely to recieve SNAP benefits compared to those without a degree, controlling for age and state
+
+#privmdl 
+#college = 0.8507 -> odds ratio: exp(0.8507) = 2.34
+#Latino adults with a college degree are approximately 2.34 times more likley to have private health insurance than those without a degree, controlling for age and stae
+
+#occmdl 
+#most coefficients for college are negative meaning Latino adults with a college degree are significantlty less likely to work in occupations that require lower level skills such as construction and service jobs, compared to occupations that require higher skills
+
+#residual plot
+#dense cloud, slight funnel shape and slight downward trend
+#residuals are generally centered around 0 which makes my model reasonably well specified but there's still evidence of heteroskedasticity and that means the model performs less consistently at different income levels (usually higher)
+
+#for the income visualization i chose to use the logged data because it makes the distribution cleaner and data more balanced, makes it easier to compare groups too because without using the log one the graph looks stretched out and most of the data gets squished at the bottom so it's more difficult to see the differences between groups
+
+```
+
+```{r}
+#TO DO THIS WEEK:
+
+#try different variables: transform them try logs
+#linear not appropriate; take dependent and do scatter plot against each parameter like age and it should show a linear trend, if trend is non linear then square my age or log of age and i can try with other x variables 
+#can also canyon or forest regression but they're so strong that interpretation is lost completely 
+#if i can achieve .5 or higher than it's good 
+```
+
+```{r}
+#regressions post prof majhi's corrections 
+
+#incmdl_occ
+#adjusted r^2 is now 0.355 which improves model slightly; now i can say that job type helps explain income differences
+#college coef is 0.6457 meaning that college still has a strong effect on income regardless of job type 
+
+#privmdl 
+#expcoef ~ 2.82 for college meaning latino adults with a college degree afre 2.8 times more likely to have private health insurance 
+
+#snapmdl 
+#expcoef ~ .21 for college meaning latino adults with a college degree are 79% less likely to recieve SNAP benefits 
+#for women, ~1.4 meaning they're 40% more likely to recieve SNAP benefits 
+
+#occmdl (STILL NEEDS TO BE RUN)(r chose my baseline as management; was thinking it serves as a good reference category becaue it represents a high status occupation and comparing other jobs to it helps highlight how education shifts people away from lower paying roles)
+#model is predicting which occupation category someone is in based on if they went to college, age, state(baseline picked here was management; each row = comparison vs. management jobs)
+#used multinom because it predicts likelihood of an outcome that has 3 or more unordered categories
+#for college most coeffs. are negative meaning people with a college degree are LESS likely to be in these occupations compared to management; college pushes people toward management jobs
+###compared to management jobs, having a college degree significantly reduces the likelihood of being in service, construction or healthcare occupations, suggests college education shifts Latino workers towards higher earning occupations like management
+#Latino workers with no college degree are much more likley to be in manual/service jobs (coef for construction is -3.31, service -2.64, healthcare -2.44)
+#STEM coef ~0.0001 meaning college doesn't significantly change likelihood of STEM v management (im thinking it could be due to lack of data in this sector/representation of latinos in STEM)
+```
+
